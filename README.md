@@ -5,7 +5,7 @@
 
 Do you store config files, RC files, or custom scripts in Dropbox? And you want these to seamlessly sync across operating systems? Well, then you've already got what you need. Bye!
 
-Haha, JK! Do you ever think to yourself, "Gee, I could just symlink all of these files to my dropbox and everything would work magically. But then if one computer is compromized, suddenly I'm syncing compromized files all over the place!"? Dbxbin is the answer!
+Haha, JK! Do you ever think to yourself, "Gee, I could just symlink all of these files to my dropbox and everything would work magically. But then if one computer is compromised, suddenly I'm syncing compromised files all over the place!"? Dbxbin is the answer!
 
 The goals of dbxbin are:
   * Self updating - the script can update itself
