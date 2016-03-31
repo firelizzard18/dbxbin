@@ -1,0 +1,650 @@
+#!/bin/bash
+
+# Helper functions for exec
+
+function update_dbxbin {
+    if [ -z `exec check dbxbin` ] ; then
+        return
+    fi
+
+    if exec sync dbxbin ; then
+        echo "Updated dbxbin. Please relaunch."
+        exit
+    fi
+
+    echo -n "Dbxbin is out of date. Continue? [y/N] "
+    read continue
+
+    if [ "$continue" != "y" ] ; then
+        exit
+    fi
+}
+
+function update_config {
+    if [ -z `exec check config` ] ; then
+        return
+    fi
+
+    if exec sync config ; then
+        return
+    fi
+
+    echo -n "The config file is out of date. Continue? [Y/n] "
+    read continue
+
+    if [ "$continue" == "n" ] ; then
+        exit
+    fi
+}
+
+function reline {
+    echo $@ | sed 's/ /\n/g' | sort
+}
+
+function ask_user {
+    echo -n "Next entry $ENTRY: $ENTRY_SRC"
+    read
+
+    if [ "$ENTRY_DEST" -nt "$ENTRY_SRC" ] ; then
+        echo "For entry $ENTRY"
+        echo "Destination ($ENTRY_DEST) is newer than source ($ENTRY_SRC)"
+        echo -n "Continue? [y/N] "
+        read continue
+        if [ "$continue" != "y" ] ; then
+            return 1
+        fi
+    fi
+
+    if [ -f "$ENTRY_DEST" ] ; then
+        $DIFF_CMD "$ENTRY_DEST" "$ENTRY_SRC" | less
+    else
+        less "$ENTRY_SRC"
+    fi
+
+    echo -n "Sync entry $ENTRY? [Y/n] "
+    read continue
+    if [ "$continue" == "n" ] ; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+function resolve {
+    ENTRY="$1"
+    ENTRY_SRC="${SRC[$ENTRY]}"
+
+    if [ "$ENTRY" == "config" ] ; then
+        ENTRY_DEST="$DBX_CONFIG"
+    else
+        ENTRY_DEST="${DEST[$ENTRY]}"
+    fi
+
+    ENTRY_CMD="${CMD[$ENTRY]}"
+    if [ -z "$ENTRY_CMD" ] ; then
+        ENTRY_CMD="cp -i"
+    fi
+
+    if [ -z "$ENTRY_SRC" ] ; then
+        echo "$ENTRY does not have a record in SRC" >&2
+        return 1
+    elif [ -z "$ENTRY_DEST" ] ; then
+        echo "$ENTRY does not have a record in DEST" >&2
+        return 2
+    fi
+    
+    ENTRY_SRC="$DBX_ROOT$ENTRY_SRC"
+    if ! [ -f "$ENTRY_SRC" ] ; then
+        echo "$ENTRY_SRC does not exist" >&2
+        return 3
+    else
+        return 0
+    fi
+}
+
+# Helper functions for config
+
+case $(uname) in
+CYGWIN*)
+    OS_CLASS=windows
+    OS_SUBCLASS=cygwin
+    SU_CMD='cygstart --action=runas -w'
+    
+    function fn_ln_f {
+        $SU_CMD cmd /c mklink $(cygpath -w "$2") $(cygpath -w "$1")
+    }
+    function su_ln_f {
+        fn_ln_f
+    }
+    function fn_ln_d {
+        $SU_CMD cmd /c mklink /D $(cygpath -w "$2") $(cygpath -w "$1")
+    }
+    function su_ld_d {
+        fn_ln_d
+    }
+
+    function steamapp_path {
+        if [[ -z "$STEAM_REGPATH" ]] || [[ -z "$STEAM_PATH" ]] ; then
+            return -1
+        fi
+
+        local APPID=$1
+        local APP_REGPATH=$STEAM_REGPATH/Apps/$APPID
+
+        if ! [ -f $APP_REGPATH/Installed ] ; then
+            return -2
+        fi
+
+        # INSTALLED=$(cat $APP_REGPATH/Installed)
+        # if [[ "$INSTALLED" -eq 1 ]] ; then
+        #     echo $STEAM_PATH/<something>
+        # else
+        #     return -3
+        # fi
+        
+        return -3
+    }
+    ;;
+
+MINGW*)
+    OS_CLASS=windows
+    OS_SUBCLASS=mingw
+
+    echo "Unless you find a way to sudo in MinGW, shit aint working"
+    exit 1
+    ;;
+
+Linux*)
+    OS_CLASS=linux
+    OS_SUBCLASS=linux
+    SU_CMD='sudo'
+
+    function fn_ln_f {
+        ln -s "$1" "$2"
+    }
+    function su_ln_f {
+        $SU_CMD ln -s "$1" "$2"
+    }
+    function fn_ln_d {
+        fn_ln_f "$@"
+    }
+    function su_ln_d {
+        su_ln_f "$@"
+    }
+
+    function steamapp_path {
+        return -1
+    }
+    ;;
+
+*)
+    echo "Unknown OS"
+    exit 1
+    ;;
+esac
+
+function fn_cp {
+    cp -i "$1" "$2"
+}
+function su_cp {
+    $SU_CMD cp -i "$1" "$2"
+}
+function fn_chmod {
+    chmod a+x "$2"
+}
+function su_chmod {
+    $SU_CMD chmod a+x "$2"
+}
+function fn_mkdir {
+    mkdir -p $(dirname "$2")
+}
+function su_mkdir {
+    $SU_CMD mkdir -p $(dirname "$2")
+}
+
+# Helper functions for exec
+
+function wrap {
+    local WIDTH=$1
+    local INDENT=$2
+    local TEXT=${@:3}
+
+    I=0
+    J=0
+    for WORD in $TEXT ; do
+        if [[ $I -eq 0 ]] && [[ $J -eq 0 ]] ; then
+            # print the first indent
+            echo -n "$INDENT"
+            J=${#INDENT}
+        elif [[ $J -gt 0 ]] && [[ "$J+${#WORD}" -gt $WIDTH ]] ; then
+            # print a newline and indent
+            echo
+            ((I++))
+
+            echo -n "$INDENT"
+            J=${#INDENT}
+        else
+            # print a space
+            echo -n " "
+            ((J++))
+        fi
+
+        # print the word
+        echo -n "$WORD"
+        ((J+=${#WORD}))
+    done
+}
+
+function print_args {
+    case $1 in
+    exec) echo "VERB [ARGUMENT] ... " ;;
+    help) echo "VERB" ;;
+
+    init) echo "[INIT_FILE]" ;;
+    reinit) echo "[INIT_FILE]" ;;
+    setup) echo "[INIT_FILE]" ;;
+
+    check) echo "[OPTIONS] [ENTRY] ... " ;;
+    sync) echo "ENTRY ... " ;;
+    update) echo "[OPTIONS] [ENTRY] ... " ;;
+
+    info) echo "ACTION [ARGUMENT] ... " ;;
+    esac
+}
+
+function print_summary {
+    case $1 in
+    exec) echo "Manages scripts stored in and synchronized by Dropbox. The exact behavior is dependent on the verb." ;;
+    help) echo "Provides help." ;;
+    init) echo "Initializes the local dbxbin configuration." ;;
+    reinit) echo "Reinitializes the local dbxbin configuration." ;;
+    check) echo "Returns a list of any out of date entries." ;;
+    sync) echo "Syncrhonizes the specified entries." ;;
+    setup) echo "Initializes and updates" ;;
+    update) echo "Checks for out of date entries and syncrhonizes them." ;;
+    info) echo "Provides information on the local dbxbin configuration." ;;
+    esac
+}
+
+function print_detail {
+    case $1 in
+    init)
+        echo "Sources INIT_FILE and sets up the dbxbin home directory. Creates ~/.dbxbin, copies DBX_ENV_SRC to ~/.dbxbin/env, and copies DBX_CFG_SRC to DBX_CFG_DEST."
+        echo "INIT_FILE defaults to '$HDIR/dbxbin.init'. If INIT_FILE does not exist, defaults are used for everything."
+        echo "DBX_ENV_SRC defaults to '$HDIR/dbxbin.env'. If DBX_ENV_SRC does not exist, a default file is used."
+        echo "DBX_CFG_SRC defaults to '$HDIR/dbxbin.config'."
+        echo "DBX_CFG_DEST defaults to ~/.dbxbin/config."
+        ;;
+
+    check)
+        echo "Sources config and env from ~/.dbxbin and returns a list of out of date entries. If no entries are specified, all entries are checked."
+        ;;
+
+    update)
+        echo "Same options as check."
+        ;;
+
+    sync)
+        echo "For each entry, displays the file in Dropbox to the user with 'less' and the asks the user if the entry should be synchronized. If the user says yes, the destination file is deleted and replaced by the Dropbox file. The check is to prevent security vulnerabilities from propagating through Dropbox."
+        ;;
+    esac
+}
+
+function print_options {
+    local INDENT=$2
+
+    case $1 in
+    check)
+        echo
+        echo $"$INDENT""-z --skip"
+        wrap 80 "$INDENT  " Check all entries, skipping the specified entries. && echo
+        ;;
+
+    info)
+        echo
+        echo "$INDENT""src|source [ENTRY]"
+        wrap 80 "$INDENT  " Prints the source path for the entry. && echo
+        echo
+        echo "$INDENT""dst|dest|destination [ENTRY]"
+        wrap 80 "$INDENT  " Prints the destination path for the entry. && echo
+        echo
+        echo "$INDENT""cmd|command [ENTRY]"
+        wrap 80 "$INDENT  " Prints the command for the entry. && echo
+        echo
+        ;;
+    esac
+}
+
+# Exec
+
+function exec {
+    case $1 in
+    usage)
+        case $2 in
+        help|init|reinit|check|sync|setup|update|info)
+            echo "Usage: $0 $2" $(print_args $2)
+            wrap 80 '' $(print_summary $2) && echo
+            ;;
+        *)
+            echo "Usage: $0" $(print_args exec)
+            wrap 80 '' $(print_summary exec) && echo
+            ;;
+        esac
+        ;;
+
+    help)
+        case $2 in
+        init|reinit|check|sync|setup|update|info)
+            exec usage $2
+            print_detail $2 | while read line ; do
+                echo && wrap 80 '' $line && echo
+            done
+            print_options $2 '  '
+            ;;
+        *)
+            exec usage
+            echo
+            echo "  help [VERB]"
+            echo "     Displays this message or shows help for a specific verb."
+            echo
+            echo "  usage [VERB]"
+            echo "     Displays a short usage message for dbxbin or for the specified verb."
+            for cmd in init reinit check sync setup update info ; do
+                echo
+                echo "  $cmd" $(print_args $cmd)
+                wrap 80 '    ' $(print_summary $cmd) && echo
+                print_detail $cmd | while read line ; do
+                    echo && wrap 80 '    ' $line && echo
+                done
+                print_options $cmd '    '
+            done
+            ;;
+        esac
+        ;;
+
+  # check [OPTIONS] [ENTRY] [ENTRY2] [ENTRY3] ...
+  #   -z --skip
+  #     Check all entries, skipping the specified entries.
+
+    init)
+        INIT_FILE="$2"
+        if [ -z "$INIT_FILE" ] ; then
+            INIT_FILE="$DIR/dbxbin.init"
+        fi
+        if [ -f "$INIT_FILE" ] ; then
+            source "$INIT_FILE"
+        fi
+        DBX_HOME=~/.dbxbin
+
+        if [ -z "$DBX_ROOT" ] ; then
+            DBX_ROOT="$DIR"
+        fi
+
+        if [ -z "$DBX_CFG_SRC" ] ; then
+            DBX_CFG_SRC="$DBX_ROOT/dbxbin.config"
+        fi
+
+        if [ -z "$DBX_CFG_DEST" ] ; then
+            DBX_CFG_DEST=~/.dbxbin/config
+        fi
+
+        mkdir -p "$DBX_HOME"
+
+        if [ -z "$DBX_ENV_SRC" ] ; then
+            DBX_ENV_SRC="$DBX_ROOT/dbxbin.env"
+        fi
+
+        if [ -f "$DBX_ENV_SRC" ] ; then
+            cp "$DBX_ENV_SRC" "$DBX_HOME/env"
+        else
+            #exec 3<> "$DBX_HOME/env"
+
+            (
+            echo "# config file locate"
+            echo "DBX_CONFIG='$DBX_CFG_DEST'"
+            echo
+            echo "# dropbox sync root"
+            echo "DBX_ROOT='$DBX_ROOT'"
+            echo
+            echo "# original dbxbin location"
+            echo "DBX_EXE_SRC_DIR='$DIR'"
+            echo
+            echo "# primary user name"
+            echo "USER_NAME='$USER'"
+            echo
+            echo "# directory for RC files for the primary user"
+            echo "USER_RC='$HOME'"
+            echo
+            echo "# directory for scripts for the primary user"
+            echo "USER_BIN='$HOME/.bin'"
+            echo
+            echo "# directory for RC files for root"
+            echo "ROOT_RC=/root"
+            echo
+            echo "# directory for system-wide user scripts"
+            echo "LOCAL_BIN=/usr/local/bin"
+            echo
+            echo "# directory for system-wide root scripts"
+            echo "LOCAL_SBIN=/usr/local/sbin"
+            echo
+            echo "# entries to ignore on this machine"
+            echo "#IGNORE=entry1 entry2"
+            ) > "$DBX_HOME/env"
+
+            case "$OS_CLASS" in
+            windows) (
+                echo
+                echo "# windows home folder"
+                echo "WINUSER_RC='/cygdrive/c/Users/${HOME#/home/}'"
+                echo
+                echo "# directory for windows app data"
+                echo "APP_DATA='$(dirname $(cygpath $APPDATA))'"
+                echo
+                echo "# steam path"
+                echo "STEAM_REGPATH=/proc/registry/HKEY_CURRENT_USER/Software/Valve/Steam"
+                echo 'if [ -f $STEAM_REGPATH/SteamPath ] ; then'
+                echo '    STEAM_PATH="$(cygpath $(cat $STEAM_REGPATH/SteamPath))"'
+                echo 'fi'
+                ) >> "$DBX_HOME/env" ;;
+
+            linux) (
+                echo
+                echo "# steam path"
+                echo "if [ -f '$HOME/.steam' ] ; then"
+                echo "    STEAM_PATH='$HOME/.steam/steam'"
+                echo "fi"
+                ) >> "$DBX_HOME/env" ;;
+            esac
+        fi
+
+        cp "$DBX_CFG_SRC" "$DBX_CFG_DEST"
+        ;;
+
+    reinit)
+        CMDLINE="dbxbin init"
+        for arg in "${@:2}" ; do
+            sarg=($arg)
+            if [[ "${#sarg[@]}" -gt 1 ]] ; then
+                CMDLINE="$CMDLINE '${sarg[@]}'"
+            else
+                CMDLINE="$CMDLINE $sarg"
+            fi
+        done
+        echo "Reinitialization will delete ~/.dbxbin and then call \`$CMDLINE\`."
+        echo -n "Continue? [y/N] "
+        read continue
+        if [ "$continue" != "y" ] ; then
+            exit 1
+        fi
+
+        rm -rf ~/.dbxbin
+        exec init "$@"
+        ;;
+
+    check)
+        if [ -z "$2" ] ; then
+            for entry in "${!SRC[@]}" ; do
+                exec check "$entry"
+            done
+        elif [ "$2" == "-z" ] || [ "$2" == "--skip" ] ; then
+            for entry in $(comm -32 <(reline ${!SRC[@]}) <(reline ${@:2})) ; do
+                exec check "$entry"
+            done
+        elif resolve "$2" ; then
+            if ! [ -f "$ENTRY_DEST" ] ; then
+                echo $ENTRY
+            elif ! cmp --silent $ENTRY_DEST $ENTRY_SRC ; then
+                echo $ENTRY
+            fi
+        fi
+        ;;
+
+    sync)
+        if [ "$#" -eq 1 ] ; then
+            echo "Usage: $0 sync [file] ..."
+            exit
+        elif [ "$#" -gt 2 ] ; then
+            for entry in "${@:2}" ; do
+                exec sync "$entry"
+            done
+        elif resolve "$2" && ask_user "$ENTRY" "$ENTRY_SRC" ; then
+            $ENTRY_CMD "$ENTRY_SRC" "$ENTRY_DEST"
+        fi
+        ;;
+
+    setup)
+        exec init "${@:2}"
+        exec update
+        ;;
+
+    update)
+        update_dbxbin
+        update_config
+
+        if [ -z "$2" ] ; then
+            TO_SYNC=$(exec check -z dbxbin config)
+        elif [ "$2" == "-z" ] || [ "$2" == "--skip" ] ; then
+            TO_SYNC=$(exec check "${@:2}" dbxbin config)
+        else
+            TO_SYNC=$(exec check "${@:2}")
+        fi
+
+        if [ -z "$TO_SYNC" ] ; then
+            echo "Everything is up to date"
+        else
+            exec sync $TO_SYNC
+        fi
+        ;;
+
+    info)
+        case $2 in
+        src|source)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_SRC
+            ;;
+
+        dst|dest|destination)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_DEST
+            ;;
+
+        cmd|command)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_CMD
+            ;;
+
+        "")
+            exec help info
+            ;;
+
+        *)
+            echo "Unknown info action $2."
+            ;;
+        esac
+        ;;
+
+
+    "")
+        exec help
+        ;;
+
+    *)
+        echo "Unknown action $1."
+        exec usage
+        ;;
+    esac
+}
+
+function nice_dir {
+    if [[ $OS_CLASS == "windows" ]] ; then
+        WINHOME=$(cygpath 'C:\Users')${HOME#/home}
+        WINTILDE='~win'
+
+        HDIR="${DIR/#$WINHOME/$WINTILDE}"
+    else
+        HDIR="$DIR"
+    fi
+}
+
+ORIGDIR=`readlink -f "$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"`
+DIR=$(dirname $ORIGDIR)
+
+if ! [ -f ~/.dbxbin/env ] ; then
+    case $1 in
+    init|reinit)
+        exec "$@"
+        ;;
+
+    "")
+        nice_dir
+        exec help
+        ;;
+
+    *)
+        echo "Verb $1 cannot be run at this time as ~/.dbxbin has not been initialized."
+    esac
+    
+    exit
+fi
+
+DIFF_CMD=diff
+if which colordiff &> /dev/null ; then
+    DIFF_CMD=colordiff
+fi
+
+unset SRC DEST CMD
+declare -A SRC DEST CMD
+
+source ~/.dbxbin/env
+if [[ -z "$DBX_CONFIG" ]] || ! [ -f "$DBX_CONFIG" ] ; then
+    echo "Something weird happened. Found env but not config. Maybe delete ~/.dbxbin."
+fi
+
+source "$DBX_CONFIG"
+
+for entry in $IGNORE ; do
+    >&2 echo "Ignoring entry $entry"
+    unset SRC[$entry]
+    unset DEST[$entry]
+    unset CMD[$entry]
+done
+
+if [[ -n "$DBX_EXE_SRC_DIR" ]] && [[ $ORIGDIR =~ ^$LOCAL_BIN ]] ; then
+    DIR=$DBX_EXE_SRC_DIR
+fi
+
+nice_dir
+
+exec "$@"
