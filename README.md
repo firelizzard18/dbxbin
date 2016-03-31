@@ -163,6 +163,8 @@ dependent on the verb.
     * It will probably work though.
   * Only one person has actually used this to date
     * Let me know!
+  * Slow in Cygwin
+    * Windows doesn't have real fork() support, so [Cygwin's implmentation](https://www.cygwin.com/faq.html#faq.api.fork) is slow, and bash uses fork() for *everything*, and dbxbin is written in standard bash style, so it's slow.
   * No real directory syncing support
     * If you change the command for an entry, you might get directory syncing to work, but the comparison function won't. If there's demand, this may be added.
   * The whole 'self updating' thing is problematic
