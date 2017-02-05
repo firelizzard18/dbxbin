@@ -1,6 +1,10 @@
 # dbxbin
 ## Dropbox binary syncing tool
 
+# **Generating an initial environment is a bit broken**
+
+Currently, dbxbin uses various defaults for the env file. These defaults are stored in files in the env folder of this repo. However, the paths in dbxbin have not been updated for this.
+
 **MinGW is not supported**
 
 Do you store config files, RC files, or custom scripts in Dropbox? And you want these to seamlessly sync across operating systems? Well, then you've already got what you need. Bye!
