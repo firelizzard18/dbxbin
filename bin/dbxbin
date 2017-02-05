@@ -1,7 +1,10 @@
 #!/bin/bash
 
-DBX_HOME=~/.dbxbin
-mkdir -p "$DBX_HOME"
+if [ -z "$SHELLSYNC_HOME" ] ; then
+    SHELLSYNC_HOME=~/.shellsync
+fi
+
+mkdir -p "$SHELLSYNC_HOME"
 
 ORIGDIR=$(readlink -f $(\cd $( dirname "${BASH_SOURCE[0]}" ) && pwd))
 DIR=$(dirname $ORIGDIR)
@@ -152,15 +155,15 @@ function define_setup_functions {
 
         if which JSON.sh &> /dev/null ; then
             JSON=$(which JSON.sh)
-        elif [ -f "$DBX_HOME/JSON.sh" ] ; then
-            JSON="$DBX_HOME/JSON.sh"
+        elif [ -f "$SHELLSYNC_HOME/JSON.sh" ] ; then
+            JSON="$SHELLSYNC_HOME/JSON.sh"
         else
-            echo "JSON.sh was not found on the path or in $DBX_HOME"
-            if ! promptYN "Download github.com/dominictarr/JSON.sh to $DBX_HOME/JSON.sh?" y ; then
+            echo "JSON.sh was not found on the path or in $SHELLSYNC_HOME"
+            if ! promptYN "Download github.com/dominictarr/JSON.sh to $SHELLSYNC_HOME/JSON.sh?" y ; then
                 ercho "Cannot proceed without JSON.sh"
                 SUCCESS=false
             else
-                JSON="$DBX_HOME/JSON.sh"
+                JSON="$SHELLSYNC_HOME/JSON.sh"
                 curl -s https://raw.githubusercontent.com/dominictarr/JSON.sh/a82c5831dd567bb10a397625729420088e750156/JSON.sh > $JSON
                 chmod +x $JSON
             fi
@@ -176,7 +179,7 @@ function define_setup_functions {
 
         check_web_reqs
 
-        TOKEN_FILE="$DBX_HOME/token"
+        TOKEN_FILE="$SHELLSYNC_HOME/token"
         [ -f "$TOKEN_FILE" ] || die 1 "Cound not find Dropbox Developer app authorization token: file missing."
 
         TOKEN=$(cat $TOKEN_FILE)
@@ -186,10 +189,10 @@ function define_setup_functions {
         API_URL=https://api.dropboxapi.com/2
         CONTENT_URL=https://content.dropboxapi.com/2
 
-        MANIFEST="$DBX_HOME/manifest"
-        CACHE_DIR="$DBX_HOME/cache"
+        MANIFEST="$SHELLSYNC_HOME/manifest"
+        CACHE_DIR="$SHELLSYNC_HOME/cache"
 
-        # mkdir -p "$DBX_HOME/tmp"
+        # mkdir -p "$SHELLSYNC_HOME/tmp"
         mkdir -p "$CACHE_DIR"
         touch "$MANIFEST"
     }
@@ -197,14 +200,14 @@ function define_setup_functions {
     function load_env {
         once
 
-        [ -f "$DBX_HOME/env" ] || die 1 "Verb $1 cannot be run at this time as $DBX_HOME has not been initialized."
+        [ -f "$SHELLSYNC_HOME/env" ] || die 1 "Verb $1 cannot be run at this time as $SHELLSYNC_HOME has not been initialized."
 
         unset SRC DEST CMD RCMD SRCABS
         declare -A SRC DEST CMD RCMD SRCABS
 
-        source "$DBX_HOME/env"
+        source "$SHELLSYNC_HOME/env"
 
-        [[ -n "$DBX_CONFIG" ]] && [ -f "$DBX_CONFIG" ] || die 1 "Something weird happened. Found env but not config. Maybe delete $DBX_HOME."
+        [[ -n "$DBX_CONFIG" ]] && [ -f "$DBX_CONFIG" ] || die 1 "Something weird happened. Found env but not config. Maybe delete $SHELLSYNC_HOME."
 
         source "$DBX_CONFIG"
 
@@ -389,7 +392,7 @@ function define_exec_functions {
         fi
 
         if [ -z "$DBX_CFG_DEST" ] ; then
-            DBX_CFG_DEST="$DBX_HOME/config"
+            DBX_CFG_DEST="$SHELLSYNC_HOME/config"
         fi
 
 
@@ -398,7 +401,7 @@ function define_exec_functions {
         fi
 
         if [ -f "$DBX_ENV_SRC" ] ; then
-            cp "$DBX_ENV_SRC" "$DBX_HOME/env"
+            cp "$DBX_ENV_SRC" "$SHELLSYNC_HOME/env"
         else
             exec_write_env
         fi
@@ -407,7 +410,7 @@ function define_exec_functions {
     }
 
     function exec_write_env {
-        #exec 3<> "$DBX_HOME/env"
+        #exec 3<> "$SHELLSYNC_HOME/env"
         export USER=${HOME#/home/}
         export DBX_CFG_DEST
         export DBX_ROOT
@@ -419,42 +422,42 @@ function define_exec_functions {
             export APP_DATA=$(dirname $(cygpath $APPDATA))
         fi
 
-        echo '## main'$'\n' > "$DBX_HOME/env"
-        envsubst < "$ORIGDIR"/dbxbin.env.defaults >> "$DBX_HOME/env"
-        echo $'\n'$'\n' >> "$DBX_HOME/env"
+        echo '## main'$'\n' > "$SHELLSYNC_HOME/env"
+        envsubst < "$ORIGDIR"/dbxbin.env.defaults >> "$SHELLSYNC_HOME/env"
+        echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env"
 
         case "$OS_CLASS" in
         windows)
             case "$OS_SUBCLASS" in
                 cygwin)
-                    echo '## cygwin'$'\n' >> "$DBX_HOME/env"
-                    envsubst < "$ORIGDIR"/dbxbin.env.cygwin >> "$DBX_HOME/env"
-                    echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+                    echo '## cygwin'$'\n' >> "$SHELLSYNC_HOME/env"
+                    envsubst < "$ORIGDIR"/dbxbin.env.cygwin >> "$SHELLSYNC_HOME/env"
+                    echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env" ;;
             esac
 
-            echo '## windows common'$'\n' >> "$DBX_HOME/env"
-            envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$DBX_HOME/env"
-            echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+            echo '## windows common'$'\n' >> "$SHELLSYNC_HOME/env"
+            envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$SHELLSYNC_HOME/env"
+            echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env" ;;
 
         linux)
-            echo '## linux'$'\n' >> "$DBX_HOME/env"
-            envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$DBX_HOME/env"
-            echo $'\n'$'\n' >> "$DBX_HOME/env"
+            echo '## linux'$'\n' >> "$SHELLSYNC_HOME/env"
+            envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$SHELLSYNC_HOME/env"
+            echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env"
 
             case "$OS_SUBCLASS" in
             gentoo)
-                echo '## gentoo'$'\n' >> "$DBX_HOME/env"
-                envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$DBX_HOME/env"
-                echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+                echo '## gentoo'$'\n' >> "$SHELLSYNC_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$SHELLSYNC_HOME/env"
+                echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env" ;;
 
             wsl)
-                echo '## windows subsystem for linux'$'\n' >> "$DBX_HOME/env"
-                envsubst < "$ORIGDIR"/dbxbin.env.wsl >> "$DBX_HOME/env"
-                echo $'\n'$'\n' >> "$DBX_HOME/env"
+                echo '## windows subsystem for linux'$'\n' >> "$SHELLSYNC_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.wsl >> "$SHELLSYNC_HOME/env"
+                echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env"
 
-                echo '## windows common'$'\n' >> "$DBX_HOME/env"
-                envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$DBX_HOME/env"
-                echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+                echo '## windows common'$'\n' >> "$SHELLSYNC_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$SHELLSYNC_HOME/env"
+                echo $'\n'$'\n' >> "$SHELLSYNC_HOME/env" ;;
 
             esac ;;
         esac
@@ -473,10 +476,10 @@ function define_exec_functions {
                 CMDLINE="$CMDLINE $sarg"
             fi
         done
-        echo "Reinitialization will delete $DBX_HOME and then call \`$CMDLINE\`."
+        echo "Reinitialization will delete $SHELLSYNC_HOME and then call \`$CMDLINE\`."
         promptYN "Continue?" n || exit 1
 
-        rm -rf $DBX_HOME
+        rm -rf $SHELLSYNC_HOME
         ORIGDIR="$DBX_EXE_SRC_DIR"
         exec_init "$@"
     }
@@ -670,7 +673,7 @@ function define_exec_functions {
         token=$(echo $http_resp | $JSON | grep '^\["access_token"\]' | cut -d$'\t' -f2 | sed -r 's/^"(.*)"$/\1/')
         [ -n "$token" ] || die 2 "Unexpected response:"$'\n'"$http_resp"
 
-        echo $token > "$DBX_HOME/token"
+        echo $token > "$SHELLSYNC_HOME/token"
 
         exec_rebuild_web_manifest
     }
@@ -953,15 +956,15 @@ function define_print_functions {
     function print_detail {
         case $1 in
         init)
-            echo "Sources INIT_FILE and sets up the dbxbin home directory. Creates $DBX_HOME, copies DBX_ENV_SRC to $DBX_HOME/env, and copies DBX_CFG_SRC to DBX_CFG_DEST."
+            echo "Sources INIT_FILE and sets up the dbxbin home directory. Creates $SHELLSYNC_HOME, copies DBX_ENV_SRC to $SHELLSYNC_HOME/env, and copies DBX_CFG_SRC to DBX_CFG_DEST."
             echo "INIT_FILE defaults to '$HDIR/dbxbin.init'. If INIT_FILE does not exist, defaults are used for everything."
             echo "DBX_ENV_SRC defaults to '$HDIR/dbxbin.env'. If DBX_ENV_SRC does not exist, a default file is used."
             echo "DBX_CFG_SRC defaults to '$HDIR/dbxbin.config'."
-            echo "DBX_CFG_DEST defaults to $DBX_HOME/config."
+            echo "DBX_CFG_DEST defaults to $SHELLSYNC_HOME/config."
             ;;
 
         check)
-            echo "Sources config and env from $DBX_HOME and returns a list of out of date entries. If no entries are specified, all entries are checked."
+            echo "Sources config and env from $SHELLSYNC_HOME and returns a list of out of date entries. If no entries are specified, all entries are checked."
             ;;
 
         update)
