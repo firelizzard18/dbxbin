@@ -1,0 +1,29 @@
+# config file locate
+DBX_CONFIG='$DBX_CFG_DEST'
+
+# dropbox sync root
+DBX_ROOT='$DBX_ROOT'
+
+# original dbxbin location
+DBX_EXE_SRC_DIR='$ORIGDIR'
+
+# primary user name
+USER_NAME='$USER'
+
+# directory for RC files for the primary user
+USER_RC='$HOME'
+
+# directory for scripts for the primary user
+USER_BIN='$HOME/.bin'
+
+# directory for RC files for root
+ROOT_RC=/root
+
+# directory for system-wide user scripts
+LOCAL_BIN=/usr/local/bin
+
+# directory for system-wide root scripts
+LOCAL_SBIN=/usr/local/sbin
+
+# entries to ignore on this machine
+#IGNORE=entry1 entry2

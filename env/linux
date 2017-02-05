@@ -1,0 +1,4 @@
+# steam path
+if [ -f '$HOME/.steam' ] ; then
+    STEAM_PATH='$HOME/.steam/steam'
+fi

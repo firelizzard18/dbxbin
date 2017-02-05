@@ -1,0 +1,12 @@
+# windows home folder
+WINUSER_RC="${DOLLAR}WIN_ROOT"'/Users/'"${DOLLAR}WIN_USER"
+
+# git for windows root
+GFW_ROOT="${DOLLAR}WIN_ROOT"'/Program Files/Git'
+
+# git for windows local bin
+GFW_LOCAL_BIN="${DOLLAR}GFW_ROOT"'/usr/local/bin'
+
+# directory for windows app data
+APP_DATA="${DOLLAR}WINUSER_RC"'/AppData'
+

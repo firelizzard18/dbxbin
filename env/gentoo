@@ -1,0 +1,5 @@
+# overlay install location
+OVERLAYS=/usr/local
+
+# portage repo location
+PORTAGE_REPOS=/etc/portage/repos.conf

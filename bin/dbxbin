@@ -1,0 +1,1170 @@
+#!/bin/bash
+
+DBX_HOME=~/.dbxbin
+mkdir -p "$DBX_HOME"
+
+ORIGDIR=$(readlink -f $(\cd $( dirname "${BASH_SOURCE[0]}" ) && pwd))
+DIR=$(dirname $ORIGDIR)
+
+function once {
+    eval "function ${FUNCNAME[1]} { :; }"
+}
+
+function ercho {
+    >&2 echo "$@"
+}
+
+function die {
+    ercho "${@:2}"
+    exit $1
+}
+
+function reline {
+    echo $@ | sed 's/ /\n/g' | sort
+}
+
+function resolve {
+    ENTRY="$1"
+    ENTRY_SRC="${SRC[$ENTRY]}"
+    ENTRY_SRC_ABS="${SRCABS[$ENTRY]}"
+
+    if [ "$ENTRY" == "config" ] ; then
+        ENTRY_DEST="$DBX_CONFIG"
+    else
+        ENTRY_DEST="${DEST[$ENTRY]}"
+    fi
+
+    ENTRY_CMD="${CMD[$ENTRY]}"
+    if [ -z "$ENTRY_CMD" ] ; then
+        ENTRY_CMD="fn_cp"
+    fi
+
+    ENTRY_RCMD="${RCMD[$ENTRY]}"
+    if [ -z "$ENTRY_RCMD" ] ; then
+        ENTRY_RCMD="fn_cp"
+    fi
+
+    if [ -z "$ENTRY_SRC" ] ; then
+        echo "$ENTRY does not have a record in SRC" >&2
+        return 1
+    elif [ -z "$ENTRY_DEST" ] ; then
+        echo "$ENTRY does not have a record in DEST" >&2
+        return 2
+    fi
+    
+    if [ -n "$ENTRY_SRC_ABS" ] && "$ENTRY_SRC_ABS" ; then
+        ENTRY_SRC="$ENTRY_SRC"
+    else
+        ENTRY_SRC="$DBX_ROOT$ENTRY_SRC"
+    fi
+}
+
+function determine_os {
+    once
+
+    case $(uname) in
+    CYGWIN*)
+        OS_CLASS=windows
+        OS_SUBCLASS=cygwin
+        ;;
+
+    MINGW*)
+        OS_CLASS=windows
+        OS_SUBCLASS=mingw
+        ;;
+
+    Linux*)
+        OS_CLASS=linux
+
+        case $(uname -rv) in
+        *gentoo*)
+            OS_SUBCLASS=gentoo ;;
+        *ubuntu*)
+            OS_SUBCLASS=ubuntu ;;
+        *)
+            if grep -q -- -Microsoft /proc/version ; then
+                OS_SUBCLASS=wsl
+            else
+                OS_SUBCLASS=unknown
+            fi ;;
+        esac
+        ;;
+
+    *) die 1 "Unknown OS" ;;
+    esac
+}
+
+function setup {
+    once
+
+    DIFF_CMD=diff
+    if which colordiff &> /dev/null ; then
+        DIFF_CMD=colordiff
+    fi
+
+    determine_os
+    define_os_specific_functions
+    define_setup_functions
+
+    if [[ $OS_CLASS == "windows" ]] ; then
+        WINHOME=$(cygpath 'C:\Users')${HOME#/home}
+        WINTILDE='~win'
+
+        HDIR="${DIR/#$WINHOME/$WINTILDE}"
+    else
+        HDIR="$DIR"
+    fi
+
+    load_env "$1"
+
+    case "$INSTALL_KIND" in
+        web) setup_web ;;
+        disk) ;;
+        "") die 1 "Old shell-sync install. Please reinitialize." ;;
+        *) die 1 "Unknown installation method. Please reinitialize." ;;
+    esac
+}
+
+function define_setup_functions {
+    once
+
+    function check_wsl_init {
+        if [ -z "$WIN_USER" ] && [[ "$OS_CLASS" == "linux" ]] && [[ "$OS_SUBCLASS" == "wsl" ]] ; then
+            echo 'To init for WSL, you must define $WIN_USER'
+            exit 1
+        fi
+    }
+
+    function check_web_reqs {
+        once
+
+        SUCCESS=true
+
+        if ! which curl &> /dev/null ; then
+            ercho "dbxbin-web requires curl"
+            SUCCESS=false
+        fi
+
+        if ! which sha256sum &> /dev/null ; then
+            ercho "dbxbin-web requires curl"
+            SUCCESS=false
+        fi
+
+        if which JSON.sh &> /dev/null ; then
+            JSON=$(which JSON.sh)
+        elif [ -f "$DBX_HOME/JSON.sh" ] ; then
+            JSON="$DBX_HOME/JSON.sh"
+        else
+            echo "JSON.sh was not found on the path or in $DBX_HOME"
+            if ! promptYN "Download github.com/dominictarr/JSON.sh to $DBX_HOME/JSON.sh?" y ; then
+                ercho "Cannot proceed without JSON.sh"
+                SUCCESS=false
+            else
+                JSON="$DBX_HOME/JSON.sh"
+                curl -s https://raw.githubusercontent.com/dominictarr/JSON.sh/a82c5831dd567bb10a397625729420088e750156/JSON.sh > $JSON
+                chmod +x $JSON
+            fi
+        fi
+
+        $SUCCESS || exit -1
+        
+        define_web_functions
+    }
+
+    function setup_web {
+        once
+
+        check_web_reqs
+
+        TOKEN_FILE="$DBX_HOME/token"
+        [ -f "$TOKEN_FILE" ] || die 1 "Cound not find Dropbox Developer app authorization token: file missing."
+
+        TOKEN=$(cat $TOKEN_FILE)
+        [ -n "$TOKEN" ] || die 1 "Cound not find Dropbox Developer app authorization token: file empty."
+
+        AUTH_HEADER="Authorization: Bearer $TOKEN"
+        API_URL=https://api.dropboxapi.com/2
+        CONTENT_URL=https://content.dropboxapi.com/2
+
+        MANIFEST="$DBX_HOME/manifest"
+        CACHE_DIR="$DBX_HOME/cache"
+
+        # mkdir -p "$DBX_HOME/tmp"
+        mkdir -p "$CACHE_DIR"
+        touch "$MANIFEST"
+    }
+
+    function load_env {
+        once
+
+        [ -f "$DBX_HOME/env" ] || die 1 "Verb $1 cannot be run at this time as $DBX_HOME has not been initialized."
+
+        unset SRC DEST CMD RCMD SRCABS
+        declare -A SRC DEST CMD RCMD SRCABS
+
+        source "$DBX_HOME/env"
+
+        [[ -n "$DBX_CONFIG" ]] && [ -f "$DBX_CONFIG" ] || die 1 "Something weird happened. Found env but not config. Maybe delete $DBX_HOME."
+
+        source "$DBX_CONFIG"
+
+        for entry in $IGNORE ; do
+            ercho "Ignoring entry $entry"
+            unset SRC[$entry]
+            unset DEST[$entry]
+            unset CMD[$entry]
+        done
+
+        if [[ -n "$DBX_EXE_SRC_DIR" ]] && [[ $ORIGDIR =~ ^$LOCAL_BIN ]] ; then
+            DIR=$DBX_EXE_SRC_DIR
+        fi
+    }
+}
+
+function define_os_specific_functions {
+    once
+
+    case "$OS_CLASS,$OS_SUBCLASS" in
+    windows,cygwin)
+        SU_CMD='cygstart --action=runas -w'
+        
+        function fn_ln_f {
+            $SU_CMD cmd /c mklink $(cygpath -w "$2") $(cygpath -w "$1")
+        }
+        function su_ln_f {
+            fn_ln_f
+        }
+        function fn_ln_d {
+            $SU_CMD cmd /c mklink /D $(cygpath -w "$2") $(cygpath -w "$1")
+        }
+        function su_ld_d {
+            fn_ln_d
+        }
+
+        function steamapp_path {
+            if [[ -z "$STEAM_REGPATH" ]] || [[ -z "$STEAM_PATH" ]] ; then
+                return -1
+            fi
+
+            local APPID=$1
+            local APP_REGPATH=$STEAM_REGPATH/Apps/$APPID
+
+            if ! [ -f $APP_REGPATH/Installed ] ; then
+                return -2
+            fi
+
+            # INSTALLED=$(cat $APP_REGPATH/Installed)
+            # if [[ "$INSTALLED" -eq 1 ]] ; then
+            #     echo $STEAM_PATH/<something>
+            # else
+            #     return -3
+            # fi
+            
+            return -3
+        }
+        ;;
+
+    windows,mingw)
+        die 1 "Unless you find a way to sudo in MinGW, shit aint working"
+        ;;
+
+    linux,*)
+        SU_CMD='sudo'
+
+        function fn_ln_f {
+            ln -s "$1" "$2"
+        }
+        function su_ln_f {
+            $SU_CMD ln -s "$1" "$2"
+        }
+        function fn_ln_d {
+            fn_ln_f "$@"
+        }
+        function su_ln_d {
+            su_ln_f "$@"
+        }
+
+        function steamapp_path {
+            return -1
+        }
+        ;;
+
+    *) die 1 "Internal error";
+    esac
+
+    function fn_cp {
+        cp -f "$1" "$2"
+    }
+    function su_cp {
+        $SU_CMD cp -f "$1" "$2"
+    }
+    function fn_chmod {
+        chmod a+x "$2"
+    }
+    function su_chmod {
+        $SU_CMD chmod a+x "$2"
+    }
+    function fn_mkdir {
+        mkdir -p $(dirname "$2")
+    }
+    function su_mkdir {
+        $SU_CMD mkdir -p $(dirname "$2")
+    }
+
+    function fn_rsync {
+        rsync -rlt --delete "$1/" "$2"
+    }
+    function su_rsync {
+        $SU_CMD rsync -rlt --delete "$1/"  "$2"
+    }
+}
+
+function define_exec_functions {
+    once
+
+    function exec_usage {
+        define_print_functions
+
+        case $2 in
+        help|init|reinit|check|sync|setup|update|info|webgen)
+            echo "Usage: $0 $2" $(print_args $2)
+            wrap 80 '' $(print_summary $2) && echo
+            ;;
+        *)
+            echo "Usage: $0" $(print_args exec)
+            wrap 80 '' $(print_summary exec) && echo
+            ;;
+        esac
+    }
+
+    function exec_help {
+        define_print_functions
+
+        case $2 in
+        init|reinit|check|sync|setup|update|info|webgen)
+            exec_usage $2
+            print_detail $2 | while read line ; do
+                echo && wrap 80 '' $line && echo
+            done
+            print_options $2 '  '
+            ;;
+        *)
+            exec_usage
+            echo
+            echo "  help [VERB]"
+            echo "     Displays this message or shows help for a specific verb."
+            echo
+            echo "  usage [VERB]"
+            echo "     Displays a short usage message for dbxbin or for the specified verb."
+            for cmd in init reinit check sync setup update info webgen ; do
+                echo
+                echo "  $cmd" $(print_args $cmd)
+                wrap 80 '    ' $(print_summary $cmd) && echo
+                print_detail $cmd | while read line ; do
+                    echo && wrap 80 '    ' $line && echo
+                done
+                print_options $cmd '    '
+            done
+            ;;
+        esac
+    }
+
+    function exec_init {
+        check_wsl_init
+        
+        INIT_FILE="$2"
+        if [ -z "$INIT_FILE" ] ; then
+            INIT_FILE="$DIR/dbxbin.init"
+        fi
+        if [ -f "$INIT_FILE" ] ; then
+            source "$INIT_FILE"
+        fi
+
+        if [ -z "$DBX_ROOT" ] ; then
+            DBX_ROOT="$DIR"
+        fi
+
+        if [ -z "$DBX_CFG_SRC" ] ; then
+            DBX_CFG_SRC="$DBX_ROOT/dbxbin.config"
+        fi
+
+        if [ -z "$DBX_CFG_DEST" ] ; then
+            DBX_CFG_DEST="$DBX_HOME/config"
+        fi
+
+
+        if [ -z "$DBX_ENV_SRC" ] ; then
+            DBX_ENV_SRC="$DBX_ROOT/dbxbin.env"
+        fi
+
+        if [ -f "$DBX_ENV_SRC" ] ; then
+            cp "$DBX_ENV_SRC" "$DBX_HOME/env"
+        else
+            exec_write_env
+        fi
+
+        cp "$DBX_CFG_SRC" "$DBX_CFG_DEST"
+    }
+
+    function exec_write_env {
+        #exec 3<> "$DBX_HOME/env"
+        export USER=${HOME#/home/}
+        export DBX_CFG_DEST
+        export DBX_ROOT
+        export DIR
+        export ORIGDIR
+        export DOLLAR='$'
+
+        if which cygpath &> /dev/null ; then 
+            export APP_DATA=$(dirname $(cygpath $APPDATA))
+        fi
+
+        echo '## main'$'\n' > "$DBX_HOME/env"
+        envsubst < "$ORIGDIR"/dbxbin.env.defaults >> "$DBX_HOME/env"
+        echo $'\n'$'\n' >> "$DBX_HOME/env"
+
+        case "$OS_CLASS" in
+        windows)
+            case "$OS_SUBCLASS" in
+                cygwin)
+                    echo '## cygwin'$'\n' >> "$DBX_HOME/env"
+                    envsubst < "$ORIGDIR"/dbxbin.env.cygwin >> "$DBX_HOME/env"
+                    echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+            esac
+
+            echo '## windows common'$'\n' >> "$DBX_HOME/env"
+            envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$DBX_HOME/env"
+            echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+
+        linux)
+            echo '## linux'$'\n' >> "$DBX_HOME/env"
+            envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$DBX_HOME/env"
+            echo $'\n'$'\n' >> "$DBX_HOME/env"
+
+            case "$OS_SUBCLASS" in
+            gentoo)
+                echo '## gentoo'$'\n' >> "$DBX_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.linux >> "$DBX_HOME/env"
+                echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+
+            wsl)
+                echo '## windows subsystem for linux'$'\n' >> "$DBX_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.wsl >> "$DBX_HOME/env"
+                echo $'\n'$'\n' >> "$DBX_HOME/env"
+
+                echo '## windows common'$'\n' >> "$DBX_HOME/env"
+                envsubst < "$ORIGDIR"/dbxbin.env.windows >> "$DBX_HOME/env"
+                echo $'\n'$'\n' >> "$DBX_HOME/env" ;;
+
+            esac ;;
+        esac
+    }
+
+    function exec_reinit {
+        check_wsl_init
+        define_prompt_functions
+        
+        CMDLINE="dbxbin init"
+        for arg in "${@:2}" ; do
+            sarg=($arg)
+            if [[ "${#sarg[@]}" -gt 1 ]] ; then
+                CMDLINE="$CMDLINE '${sarg[@]}'"
+            else
+                CMDLINE="$CMDLINE $sarg"
+            fi
+        done
+        echo "Reinitialization will delete $DBX_HOME and then call \`$CMDLINE\`."
+        promptYN "Continue?" n || exit 1
+
+        rm -rf $DBX_HOME
+        ORIGDIR="$DBX_EXE_SRC_DIR"
+        exec_init "$@"
+    }
+
+    function exec_check {
+        setup
+        define_prompt_functions
+        
+        if [ -z "$2" ] ; then
+            for entry in "${!SRC[@]}" ; do
+                exec_check "$entry"
+            done
+        elif [ "$2" == "-z" ] || [ "$2" == "--skip" ] ; then
+            for entry in $(comm -32 <(reline ${!SRC[@]}) <(reline ${@:2})) ; do
+                exec_check "$entry"
+            done
+        elif resolve "$2" ; then
+            if [ -f "$ENTRY_SRC" ] ; then
+                if ! [ -f "$ENTRY_DEST" ] ; then
+                    echo $ENTRY
+                elif ! cmp --silent "$ENTRY_DEST" "$ENTRY_SRC" ; then
+                    echo $ENTRY
+                fi
+            elif [ -d "$ENTRY_SRC" ] ; then
+                if ! [ -d "$ENTRY_DEST" ] ; then
+                    echo $ENTRY
+                elif ! diff -rq "$ENTRY_DEST" "$ENTRY_SRC" > /dev/null ; then
+                    echo $ENTRY
+                fi
+            else
+                # die -1 "$ENTRY_SRC does not exist"
+                echo $ENTRY
+            fi
+        fi
+    }
+
+    function exec_sync {
+        setup
+        define_prompt_functions
+        define_update_functions
+        
+        if [ "$#" -eq 1 ] ; then
+            echo "Usage: $0 sync [file] ..."
+            exit
+        elif [ "$#" -gt 2 ] ; then
+            RET=0
+
+            for entry in "${@:2}" ; do
+                exec_sync "$entry"
+                if [ $? -ne 0 ] ; then
+                    RET=1
+                fi
+            done
+
+            return $RET
+        elif resolve "$2" && ask_user "$ENTRY" "$ENTRY_SRC" ; then
+            case "$ENTRY_ACTION" in
+            s2d) $ENTRY_CMD "$ENTRY_SRC" "$ENTRY_DEST" ;;
+            d2s) $ENTRY_RCMD "$ENTRY_DEST" "$ENTRY_SRC" ;;
+            *) die 1 "Internal error"
+                ;;
+            esac
+
+            if [ $? -ne 0 ] ; then
+                ercho "Sync failed for $ENTRY"
+                return 1
+            fi
+        fi
+    }
+
+    function exec_setup {
+        exec_init "${@:2}"
+        exec_update
+    }
+
+    function exec_update {
+        setup
+        define_prompt_functions
+        define_update_functions
+        
+        update_dbxbin "${@:2}"
+        update_config "${@:2}"
+
+        if [ -z "$2" ] ; then
+            TO_SYNC=$(exec_check -z dbxbin config)
+        elif [ "$2" == "-z" ] || [ "$2" == "--skip" ] ; then
+            TO_SYNC=$(exec_check "${@:2}" dbxbin config)
+        else
+            TO_SYNC=$(exec_check "${@:2}")
+        fi
+
+        if [ -z "$TO_SYNC" ] ; then
+            echo "Everything is up to date"
+        else
+            exec_sync $TO_SYNC
+        fi
+    }
+
+    function exec_info {
+        setup
+        
+        case $2 in
+        list)
+            echo "${!SRC[@]}"
+            ;;
+
+        src|source)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_SRC
+            ;;
+
+        dst|dest|destination)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_DEST
+            ;;
+
+        cmd|command)
+            if [ -z "$3" ] ; then
+                echo "Please specify an entry" >&2
+            else
+                resolve "$3"
+            fi
+            echo $ENTRY_CMD
+            ;;
+
+        "")
+            exec_help info
+            ;;
+
+        *)
+            echo "Unknown info action $2."
+            ;;
+        esac
+    }
+
+    function exec_webgen {
+        echo "To access Dropbox's HTTP API, you must setup DBXBIN as a Dropbox Developer app."
+        echo "To do this, go to the Dropbox Developer 'My Apps' page. If you have not already"
+        echo "created an app, click 'Create app'. Otherwise select the app. URL:"
+        echo "\tttps://www.dropbox.com/developers/apps"
+        # echo -n "App folder name: "
+        # read APP_FOLDER
+        # if [ -z "$APP_FOLDER" ] ; then
+        #     die 1 "App folder name cannot be blank"
+        # fi
+        echo -n "App key: "
+        read APP_KEY
+        [ -n "$APP_KEY" ] || die 1 "App key cannot be blank"
+        echo -n "App secret: "
+        read APP_SECRET
+        [ -n "$APP_SECRET" ] || die 1 "App secret cannot be blank"
+        echo -n "Save script to [download-dbsbin.sh]: "
+        read SCRIPT_PATH
+        if [ -z "$SCRIPT_PATH" ] ; then
+            SCRIPT_PATH="download-dbsbin.sh"
+        fi
+
+        die 0 "Not implemented"
+    }
+
+    function exec_webinit {
+        check_web_reqs
+
+        if [ -z "$APP_KEY" ] || [ -z "$APP_SECRET" ] ; then
+            ercho "The environment variables APP_KEY and APP_SECRET must be defined before using"
+            ercho "dbxbin webinit."
+            exit 1
+        fi
+
+        function oauth_request {
+            export CODE=$1
+            export URL=$2
+            capture_http curl -v -s --data code=$CODE'&grant_type=authorization_code&client_id=sqpjid4yx8dh5q9&client_secret=r8edbcohdpda85a' https://api.dropboxapi.com$URL | sed 's/declare --/typeset/g'
+        }
+
+        echo "Please authorize Shell Sync: https://www.dropbox.com/oauth2/authorize?response_type=code&client_id=$APP_KEY"
+        echo -n "Enter the code: "
+        read code
+
+        eval $(oauth_request $code /oauth2/token)
+        [[ $http_code == 200 ]] || die 1 "Could not authorize using code"
+
+        token=$(echo $http_resp | $JSON | grep '^\["access_token"\]' | cut -d$'\t' -f2 | sed -r 's/^"(.*)"$/\1/')
+        [ -n "$token" ] || die 2 "Unexpected response:"$'\n'"$http_resp"
+
+        echo $token > "$DBX_HOME/token"
+
+        exec_rebuild_web_manifest
+    }
+
+    function exec_rebuild_web_manifest {
+        setup_web
+
+        build_manifest "$MANIFEST".new || die 1 "Rebuilding manifest failed"
+
+        mv -f "$MANIFEST"{.new,}
+    }
+}
+
+function define_web_functions {
+    once
+
+    function capture_http {
+        unset http_resp
+        unset http_code
+        "$@" 2> >(http_code=$(grep '< HTTP' | cut -d' ' -f3); typeset -p http_code) > >(http_resp=$(cat); typeset -p http_resp)
+    }
+
+    function api_request {
+        URL="$1"
+        DATA="$2"
+        eval $(capture_http curl -s $API_URL$URL -H "$AUTH_HEADER" -H "Content-Type: application/json" -d "$DATA" | sed 's/declare --/typeset/g')
+        if [[ $http_code == 200 ]] ; then
+            echo $http_resp | $JSON -l -p -n
+        else
+            echo $http_resp
+        fi
+    }
+
+    function content_request {
+        URL="$1"
+        DATA="$2"
+        FILE="$3"
+        CODE=$(curl -o "$FILE" -v -X POST $CONTENT_URL$URL -H "$AUTH_HEADER" -H "Dropbox-API-Arg: $DATA" 2>&1 | grep '< HTTP' | cut -d' ' -f3)
+        if [[ $CODE == 200 ]] ; then
+            return 0
+        else
+            return $CODE
+        fi
+    }
+
+    function cache_file_raw {
+        FILE_PATH="$1"
+        FULL_PATH="$CACHE_DIR$FILE_PATH"
+        mkdir -p $(dirname $FULL_PATH)
+        content_request /files/download '{"path":"'"$FILE_PATH"'"}' "$FULL_PATH"
+        return $?
+    }
+
+    function cache_file {
+        FILE_PATH="$1"
+        FULL_PATH="$CACHE_DIR$FILE_PATH"
+
+        if [ ! -f "$FULL_PATH" ] ; then
+            cache_file_raw
+            return $?
+        fi
+
+        CACHED_REV=$(cat $MANIFEST | grep '^'"$FILE_PATH" | cut -d$'\t' -f3)
+        CURRENT_REV=$(api_request /files/get_metadata '{"path":"'"$FILE_PATH"'"}' | $JSON -n -p -l | grep '\["content_hash"\]' | cut -d$'\t' -f2 | sed 's/"//g')
+
+        if [[ "$CACHED_REV" == "$CURRENT_REV" ]] ; then
+            return
+        fi
+
+        if ! cache_file_raw "$FILE_PATH" ; then
+            return $?
+        fi
+
+        echo "Calculating the SHA256 hash of $FILE_PATH"
+        SHA_HASH=$(sha256sum "$FULL_PATH" | cut -d' ' -f1)
+        sed -i "$MANIFEST" 's|^'"$FILE_PATH"'.*|'"$FILE_PATH"'\t'"$SHA_HASH"'\t'"$CURRENT_REV"'|'
+    }
+
+    function build_manifest {
+        OUT_FILE=$1
+        declare -A ENTRIES
+        declare -A OLD
+
+        echo "Processing manifest"
+        eval $(cat "$MANIFEST" | sed -re 's/\s*#.*//' -e '/^\s*$/d' -e 's/^(.+)\t(\w+)\t(\w+)$/OLD[\1]="\1"\$'"'"'\\t'"'"'"\2"\$'"'"'\\t'"'"'"\3"/')
+
+        echo "Discovering files"
+        eval $(api_request '/files/list_folder' '{"path":"","recursive":true}' | $JSON -l -p -n | sed -re 's/\["entries",([0-9]+),"([^"]+)"\]\t(.*)/ENTRIES[\1,\2]=\3/' -e 's/\["cursor"\]\t/CURSOR=/' -e 's/\["has_more"\]\t/HAS_MORE=/')
+
+        ! $HAS_MORE || die 1 "Has more, but that's not implemented"
+
+        echo -e "# path\tsha hash\tdropbox hash" > $OUT_FILE
+        for I in $(echo "${!ENTRIES[@]}" | sed 's/ /\n/g' | cut -d, -f1 | sort -nu) ; do
+            if [[ "${ENTRIES[$I,.tag]}" != "file" ]] ; then
+                continue
+            fi
+
+            FILE_PATH=${ENTRIES[$I,path_lower]}
+            DBX_HASH=${ENTRIES[$I,content_hash]}
+
+            if echo "$FILE_PATH" | grep -q '["'"']" ; then
+                ercho "Skipping file with bad characters: $FILE_PATH"
+                continue
+            fi
+
+            # if the dropbox content hash didn't change, don't update
+            if [[ "$DBX_HASH" == $(echo "${OLD[$FILE_PATH]}" | cut -d$'\t' -f3) ]] ; then
+                echo "File has not changed: $FILE_PATH"
+                echo "${OLD[$FILE_PATH]}" >> $OUT_FILE
+                continue
+            fi
+
+            echo "Updating $FILE_PATH"
+            if ! cache_file_raw "$FILE_PATH" ; then
+                ercho "Failed to download $FILE_PATH"
+                continue
+            fi
+
+            echo "Calculating the SHA256 hash of $FILE_PATH"
+            SHA_HASH=$(sha256sum "$FULL_PATH" | cut -d' ' -f1)
+
+            echo -e "$FILE_PATH\t$SHA_HASH\t$DBX_HASH" >> $OUT_FILE
+        done
+    }
+}
+
+function define_prompt_functions {
+    once
+
+    function promptOpts {
+        local PROMPT=$1
+        local DEFAULT
+
+        declare -a OPTVAL
+        declare -a OPTRET
+        declare -a OPTMSG
+
+        local I=0
+        for opt in "${@:2}" ; do
+            ((I++))
+            OPTVAL[$I]=$(echo $opt | cut -d, -f1)
+            OPTRET[$I]=$(echo $opt | cut -d, -f2)
+            OPTMSG[$I]=$(echo $opt | cut -d, -f3)
+
+            if [[ $(echo ${OPTVAL[$I]} | cut -c1) == "-" ]] ; then
+                DEFAULT=$(echo ${OPTVAL[$I]} | cut -c2-)
+                OPTVAL[$I]=$DEFAULT
+            fi
+        done
+        local COUNT=$I
+
+        I=0
+        while [[ $I -lt $COUNT ]] ; do
+            ((I++))
+            echo "${OPTVAL[$I]}: ${OPTMSG[$I]}"
+        done
+
+        local val
+        while true ; do
+            echo -n "$PROMPT "
+            if [[ -n "$DEFAULT" ]] ; then
+                echo -n "[$DEFAULT] "
+            fi
+            read val
+
+            if [[ -z "$val" ]] ; then
+                val="$DEFAULT"
+            fi
+
+            I=0
+            while [[ $I -lt $COUNT ]] ; do
+                ((I++))
+                if [[ "$val" == "${OPTVAL[$I]}" ]] ; then
+                    return ${OPTRET[$I]}
+                fi
+            done
+
+            echo "Unrecognized response."
+        done
+    }
+
+    function promptYN {
+        local PROMPT="$1"
+        local DEFAULT="$2"
+        local BOX="[y/n]"
+
+        case "$DEFAULT" in
+        y) BOX="[Y/n]" ;;
+        n) BOX="[y/N]" ;;
+        *) DEFAULT=""  ;;
+        esac
+
+        local val
+        while true ; do
+            echo -n "$PROMPT $BOX "
+            read val
+
+            case "$val" in
+            yes|y|Yes|YES|Y) return 0 ;;
+            no|n|No|NO|N) return 1 ;;
+            '')
+                case "$DEFAULT" in
+                y) return 0 ;;
+                n) return 1 ;;
+                esac
+                ;;
+            esac
+
+            echo "Unrecognized response '$val'."
+        done
+    }
+}
+
+function define_print_functions {
+    once
+
+    function wrap {
+        local WIDTH=$1
+        local INDENT=$2
+        local TEXT=${@:3}
+
+        I=0
+        J=0
+        for WORD in $TEXT ; do
+            if [[ $I -eq 0 ]] && [[ $J -eq 0 ]] ; then
+                # print the first indent
+                echo -n "$INDENT"
+                J=${#INDENT}
+            elif [[ $J -gt 0 ]] && [[ "$J+${#WORD}" -gt $WIDTH ]] ; then
+                # print a newline and indent
+                echo
+                ((I++))
+
+                echo -n "$INDENT"
+                J=${#INDENT}
+            else
+                # print a space
+                echo -n " "
+                ((J++))
+            fi
+
+            # print the word
+            echo -n "$WORD"
+            ((J+=${#WORD}))
+        done
+    }
+
+    function print_args {
+        case $1 in
+        exec) echo "VERB [ARGUMENT] ... " ;;
+        help) echo "VERB" ;;
+
+        init) echo "[INIT_FILE]" ;;
+        reinit) echo "[INIT_FILE]" ;;
+        setup) echo "[INIT_FILE]" ;;
+
+        check) echo "[OPTIONS] [ENTRY] ... " ;;
+        sync) echo "ENTRY ... " ;;
+        update) echo "[OPTIONS] [ENTRY] ... " ;;
+
+        info) echo "ACTION [ARGUMENT] ... " ;;
+        esac
+    }
+
+    function print_summary {
+        case $1 in
+        exec) echo "Manages scripts stored in and synchronized by Dropbox. The exact behavior is dependent on the verb." ;;
+        help) echo "Provides help." ;;
+        init) echo "Initializes the local dbxbin configuration." ;;
+        reinit) echo "Reinitializes the local dbxbin configuration." ;;
+        check) echo "Returns a list of any out of date entries." ;;
+        sync) echo "Syncrhonizes the specified entries." ;;
+        setup) echo "Initializes and updates" ;;
+        update) echo "Checks for out of date entries and syncrhonizes them." ;;
+        info) echo "Provides information on the local dbxbin configuration." ;;
+        webgen) echo "Generates a script for initial installation via HTTP API." ;;
+        esac
+    }
+
+    function print_detail {
+        case $1 in
+        init)
+            echo "Sources INIT_FILE and sets up the dbxbin home directory. Creates $DBX_HOME, copies DBX_ENV_SRC to $DBX_HOME/env, and copies DBX_CFG_SRC to DBX_CFG_DEST."
+            echo "INIT_FILE defaults to '$HDIR/dbxbin.init'. If INIT_FILE does not exist, defaults are used for everything."
+            echo "DBX_ENV_SRC defaults to '$HDIR/dbxbin.env'. If DBX_ENV_SRC does not exist, a default file is used."
+            echo "DBX_CFG_SRC defaults to '$HDIR/dbxbin.config'."
+            echo "DBX_CFG_DEST defaults to $DBX_HOME/config."
+            ;;
+
+        check)
+            echo "Sources config and env from $DBX_HOME and returns a list of out of date entries. If no entries are specified, all entries are checked."
+            ;;
+
+        update)
+            echo "Same options as check."
+            ;;
+
+        sync)
+            echo "For each entry, displays the file in Dropbox to the user with 'less' and the asks the user if the entry should be synchronized. If the user says yes, the destination file is deleted and replaced by the Dropbox file. The check is to prevent security vulnerabilities from propagating through Dropbox."
+            ;;
+        webgen)
+            echo "Guides you through setting up DBXBIN as a Dropbox developer app and generates the script for initial installation via HTTP API."
+            ;;
+        esac
+    }
+
+    function print_options {
+        local INDENT=$2
+
+        case $1 in
+        check)
+            echo
+            echo $"$INDENT""-z --skip"
+            wrap 80 "$INDENT  " Check all entries, skipping the specified entries. && echo
+            ;;
+
+        info)
+            echo
+            echo "$INDENT""src|source [ENTRY]"
+            wrap 80 "$INDENT  " Prints the source path for the entry. && echo
+            echo
+            echo "$INDENT""dst|dest|destination [ENTRY]"
+            wrap 80 "$INDENT  " Prints the destination path for the entry. && echo
+            echo
+            echo "$INDENT""cmd|command [ENTRY]"
+            wrap 80 "$INDENT  " Prints the command for the entry. && echo
+            echo
+            ;;
+        esac
+    }
+}
+
+function define_update_functions {
+    once
+
+    function update_dbxbin {
+        if [ "$1" == "-z" ] || [ "$1" == "--skip" ] ; then
+            for entry in "${@:2}" ; do
+                if [ "$entry" == dbxbin ] ; then
+                    return
+                fi
+            done
+        fi
+
+        if [ -z `exec_check dbxbin` ] ; then
+            return
+        fi
+
+        if exec_sync dbxbin ; then
+            echo "Updated dbxbin. Please relaunch."
+            exit
+        fi
+
+        if ! promptYN "Dbxbin is out of date. Continue?" n ; then
+            exit
+        fi
+    }
+
+    function update_config {
+        if [ "$1" == "-z" ] || [ "$1" == "--skip" ] ; then
+            for entry in "${@:2}" ; do
+                if [ "$entry" == config ] ; then
+                    return 1
+                fi
+            done
+        fi
+
+        if [ -z `exec_check config` ] ; then
+            return 1
+        fi
+
+        if ! exec_sync config && ! promptYN "The config file is out of date. Continue?" n ; then
+            exit
+        fi
+
+        if promptYN "Updated config file. Please relaunch " y ; then
+            exit
+        fi
+    }
+
+    function do_diff {
+        if [ -f "$ENTRY_DEST" ] ; then
+            if ! [ -f "$ENTRY_SRC" ] ; then
+                less "$ENTRY_DEST"
+            else
+                $DIFF_CMD "$ENTRY_DEST" "$ENTRY_SRC" | less -R
+            fi
+        elif [ -d "$ENTRY_DEST" ] ; then
+            if ! [ -d "$ENTRY_SRC" ] ; then
+                ls -lhR "$ENTRY_DEST" | less -R
+            else
+                $DIFF_CMD -r "$ENTRY_DEST" "$ENTRY_SRC" | less -R
+            fi
+        elif [ -d "$ENTRY_SRC" ] ; then
+            ls -lhR "$ENTRY_SRC" | less -R
+        else
+            less "$ENTRY_SRC"
+        fi
+    }
+
+    function __ask_user {
+        echo "$1"
+        promptOpts "Continue?" 's,0,Skip this entry' "${@:2}" 'q,127,Exit without doing anything'
+        local RET=$?
+
+        echo
+
+        case $RET in
+        127) exit ;;
+        *) return $RET ;;
+        esac
+    }
+
+    function ask_user {
+        echo "Next entry $ENTRY: $ENTRY_SRC"
+
+        if ! [ -e "$ENTRY_SRC" ] ; then
+            if ! [ -e "$ENTRY_DEST" ] ; then
+                echo "Neither source nor destination exists for $ENTRY" >&2
+                return 2
+            fi
+
+            while true ; do
+                __ask_user "Source ($ENTRY_SRC) is not present." \
+                    "-d,1,View destination ($ENTRY_DEST)" \
+                    'w,2,Write source <= destination'
+
+                case $? in
+                0) return 1 ;;
+                1) do_diff ;;
+                2) ENTRY_ACTION=d2s ; return 0 ;;
+                esac
+            done
+        elif ! [ -e "$ENTRY_DEST" ] ; then
+            while true ; do
+                __ask_user "Destination ($ENTRY_DEST) is not present." \
+                    "-d,1,View source ($ENTRY_SRC)" \
+                    'w,2,Write source => destination'
+
+                case $? in
+                0) return 1 ;;
+                1) do_diff ;;
+                2) ENTRY_ACTION=s2d ; return 0 ;;
+                esac
+            done
+        elif [ "$ENTRY_DEST" -nt "$ENTRY_SRC" ] ; then
+            while true ; do
+                __ask_user "Destination ($ENTRY_DEST) is newer than source ($ENTRY_SRC)." \
+                    '-d,1,View diff' \
+                    'z,2,Write source => destination' \
+                    'u,3,Write source <= destination'
+
+                case $? in
+                0) return 1 ;;
+                1) do_diff ;;
+                2) ENTRY_ACTION=s2d ; return 0 ;;
+                3) ENTRY_ACTION=d2s ; return 0 ;;
+                esac
+            done
+        else
+            while true ; do
+                __ask_user "Destination ($ENTRY_DEST) is out of date." \
+                    '-d,1,View diff' \
+                    'w,2,Write source => destination'
+
+                case $? in
+                0) return 1 ;;
+                1) do_diff ;;
+                2) ENTRY_ACTION=s2d ; return 0 ;;
+                esac
+            done
+        fi
+    }
+}
+
+define_exec_functions
+
+case $1 in
+    usage) exec_usage "$@" ;;
+    help) exec_help "$@" ;;
+    init) exec_init "$@" ;;
+    reinit) exec_reinit "$@" ;;
+    check) exec_check "$@" ;;
+    sync) exec_sync "$@" ;;
+    setup) exec_setup "$@" ;;
+    update) exec_update "$@" ;;
+    info) exec_info "$@" ;;
+
+    webgen) exec_webgen "$@" ;; # infrastructure
+    webinit) exec_webinit "$@" ;; # infrastructure
+
+    # write-env) exec_write_env "$@" ;; # internal
+    # rebuild-web-manifest) exec_rebuild_web_manifest "$@" ;; # internal
+
+    "") exec_help ;;
+    *) echo "Unknown action $1." && exec_usage && exit 1 ;;
+esac

@@ -1,0 +1,11 @@
+# windows root
+WIN_ROOT='/cygdrive/c'
+
+# windows username
+WIN_USER="${DOLLAR}USER"
+
+# steam path
+STEAM_REGPATH=/proc/registry/HKEY_CURRENT_USER/Software/Valve/Steam
+if [ -f $STEAM_REGPATH/SteamPath ] ; then
+    STEAM_PATH="$(cygpath $(cat $STEAM_REGPATH/SteamPath))"
+fi

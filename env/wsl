@@ -1,0 +1,5 @@
+# windows root
+WIN_ROOT='/mnt/c'
+
+# windows username
+WIN_USER="$WIN_USER"
